@@ -1,4 +1,4 @@
-name: 'torrdav'
+name: 'TorrDAV'
 version: '3'
 services:
   torrdav:
