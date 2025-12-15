@@ -1,12 +1,12 @@
-name: 'torrtv'
+name: 'torrdav'
 version: '3'
 services:
-  torrtv:
+  torrdav:
     build:
       context: .
       dockerfile: Dockerfile
-    image: jarvisnexus/torrtv:latest
-    container_name: torrtv
+    image: jarvisnexus/torrdav:latest
+    container_name: torrdav
     ports:
       - "3000:3000"
     environment:

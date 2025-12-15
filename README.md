@@ -11,15 +11,15 @@ TorrServer's native playlist endpoint is not compatible with most IPTV players. 
 ### Docker Compose
 
 ```yaml
-name: 'torrtv'
+name: 'torrdav'
 version: '3'
 services:
-  torrtv:
+  torrdav:
     build:
       context: .
       dockerfile: Dockerfile
-    image: jarvisnexus/torrtv:latest
-    container_name: torrtv
+    image: jarvisnexus/torrdav:latest
+    container_name: torrdav
     ports:
       - "3000:3000"
     environment:
@@ -132,17 +132,17 @@ Create different playlist URLs for different scenarios:
 
 **At Home:**
 ```
-http://torrtv.local:3000/playlist/all?url=http://torrserver.local:5665
+http://torrdav.local:3000/playlist/all?url=http://torrserver.local:5665
 ```
 
 **On Mobile (VPN):**
 ```
-http://torrtv.local:3000/playlist/all?url=http://10.8.0.5:5665
+http://torrdav.local:3000/playlist/all?url=http://10.8.0.5:5665
 ```
 
 **Away from Home (Tunnel):**
 ```
-http://torrtv.myserver.com:3000/playlist/all?url=https://torrserver-tunnel.myserver.com
+http://torrdav.myserver.com:3000/playlist/all?url=https://torrserver-tunnel.myserver.com
 ```
 
 ### IPTV Player Configuration

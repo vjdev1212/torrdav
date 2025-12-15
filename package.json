@@ -1,5 +1,5 @@
 {
-  "name": "torrtv",
+  "name": "torrdav",
   "description": "IPTV Wrapper for TorrServer",
   "main": "index.js",
   "type": "module",
@@ -8,7 +8,7 @@
     "start": "node index.js",
     "deploy": "vercel",
     "dev": "nodemon index.js",
-    "docker-push:latest": "docker buildx build --tag=jarvisnexus/torrtv:latest --platform=linux/arm64,linux/amd64 --push ."
+    "docker-push:latest": "docker buildx build --tag=jarvisnexus/torrdav:latest --platform=linux/arm64,linux/amd64 --push ."
   },
   "dependencies": {
     "@koa/router": "^12.0.1",
