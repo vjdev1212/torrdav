@@ -468,6 +468,49 @@ router.get('/health', async (ctx) => {
   }
 });
 
+router.get('/hello', async (ctx) => {
+  try {
+    ctx.body = { 
+      status: 'Hello from TorrDAV', 
+      message: 'Application Running!',
+    };
+  } catch (error) {
+    ctx.status = 200;
+    ctx.body = { 
+      status: 'error'
+    };
+  }
+});
+
+router.get('/ping', async (ctx) => {
+  try {
+    ctx.body = { 
+      status: 'Ping working!', 
+      message: 'Application Running!',
+    };
+  } catch (error) {
+    ctx.status = 200;
+    ctx.body = { 
+      status: 'error'
+    };
+  }
+});
+
+router.get('', async (ctx) => {
+  try {
+    ctx.body = { 
+      status: 'ok', 
+      message: 'Application Running!',
+    };
+  } catch (error) {
+    ctx.status = 200;
+    ctx.body = { 
+      status: 'error'
+    };
+  }
+});
+
+
 // Use router
 app.use(router.routes());
 app.use(router.allowedMethods());
