@@ -57,6 +57,16 @@ async function getTorrentsList() {
   }
 }
 
+// Helper function to escape XML special characters
+function escapeXml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 // Helper function to get file list from torrent data
 function getFilesFromTorrent(torrent) {
   // First check if file_stats already exists (like it does for TV shows)
@@ -123,7 +133,7 @@ async function handlePropfind(ctx) {
   const path = decodeURIComponent(ctx.path);
   const depth = ctx.headers.depth || '0';
   
-  console.log(`[PROPFIND] Path: ${path}, Depth: ${depth}, User-Agent: ${ctx.headers['user-agent']}`);
+  console.log(`[PROPFIND] Path: ${path}, Depth: '${depth}' (type: ${typeof depth}), User-Agent: ${ctx.headers['user-agent']}`);
 
   try {
     // Root directory
@@ -231,11 +241,14 @@ async function handlePropfind(ctx) {
   </D:response>`;
 
       if (depth !== '0') {
+        console.log(`[TORRENT] Adding ${files.length} files to XML response`);
         for (const file of files) {
           const fileName = file.path;
           const encodedFileName = encodeURIComponent(fileName);
           const ext = fileName.toLowerCase().split('.').pop();
           const contentType = getContentType(ext);
+          
+          console.log(`[TORRENT] Adding file: ${fileName}`);
           
           xmlResponse += `
   <D:response>
@@ -246,7 +259,7 @@ async function handlePropfind(ctx) {
         <D:getcontentlength>${file.length || 0}</D:getcontentlength>
         <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
         <D:creationdate>${timestamp.toISOString()}</D:creationdate>
-        <D:displayname>${fileName}</D:displayname>
+        <D:displayname>${escapeXml(fileName)}</D:displayname>
         <D:getcontenttype>${contentType}</D:getcontenttype>
         <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
       </D:prop>
@@ -254,11 +267,14 @@ async function handlePropfind(ctx) {
     </D:propstat>
   </D:response>`;
         }
+      } else {
+        console.log(`[TORRENT] Depth is 0, not adding files`);
       }
 
       xmlResponse += `</D:multistatus>`;
       
       console.log(`[TORRENT] Returning folder with ${depth === '0' ? '0' : files.length} files`);
+      console.log(`[XML] Response preview:`, xmlResponse.substring(0, 500));
       
       ctx.status = 207;
       ctx.set('Content-Type', 'application/xml; charset=utf-8');
@@ -304,7 +320,7 @@ async function handlePropfind(ctx) {
         <D:getcontentlength>${file.length || 0}</D:getcontentlength>
         <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
         <D:creationdate>${timestamp.toISOString()}</D:creationdate>
-        <D:displayname>${file.path}</D:displayname>
+        <D:displayname>${escapeXml(file.path)}</D:displayname>
         <D:getcontenttype>${contentType}</D:getcontenttype>
         <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
         <D:supportedlock>
