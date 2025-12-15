@@ -1,0 +1,16 @@
+name: 'torrtv'
+version: '3'
+services:
+  torrtv:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jarvisnexus/torrtv:latest
+    container_name: torrtv
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - TORRSERVER_URL=http://192.168.1.10:5665
+      - HOST=0.0.0.0
+    restart: always
