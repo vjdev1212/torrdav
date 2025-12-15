@@ -274,7 +274,7 @@ async function handlePropfind(ctx) {
       xmlResponse += `</D:multistatus>`;
       
       console.log(`[TORRENT] Returning folder with ${depth === '0' ? '0' : files.length} files`);
-      console.log(`[XML] Response preview:`, xmlResponse.substring(0, 500));
+      // console.log(`[XML] Response preview:`, xmlResponse.substring(0, 500));
       
       ctx.status = 207;
       ctx.set('Content-Type', 'application/xml; charset=utf-8');
