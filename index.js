@@ -59,24 +59,23 @@ async function getTorrentsList() {
 
 // Helper function to get file list from torrent data
 function getFilesFromTorrent(torrent) {
+  // First check if file_stats already exists (like it does for TV shows)
+  if (torrent.file_stats && torrent.file_stats.length > 0) {
+    console.log(`[FILES] ${torrent.title}: Using file_stats (${torrent.file_stats.length} files)`);
+    return torrent.file_stats;
+  }
+  
   // Parse the data property which contains JSON string with file info
   if (torrent.data) {
     try {
       const parsedData = JSON.parse(torrent.data);
       if (parsedData.TorrServer && parsedData.TorrServer.Files && parsedData.TorrServer.Files.length > 0) {
-        console.log(`[FILES] ${torrent.title}: Found ${parsedData.TorrServer.Files.length} file(s)`);
+        console.log(`[FILES] ${torrent.title}: Parsed from data (${parsedData.TorrServer.Files.length} files)`);
         return parsedData.TorrServer.Files;
       }
     } catch (error) {
       console.log(`[ERROR] Failed to parse data for ${torrent.title}:`, error.message);
-      console.log(`[ERROR] Raw data:`, torrent.data.substring(0, 200));
     }
-  }
-  
-  // Fallback: check file_stats (though you said not to trust it)
-  if (torrent.file_stats && torrent.file_stats.length > 0) {
-    console.log(`[FILES] ${torrent.title}: Using file_stats fallback (${torrent.file_stats.length} files)`);
-    return torrent.file_stats;
   }
   
   console.log(`[FILES] ${torrent.title}: No files found!`);
@@ -159,37 +158,8 @@ async function handlePropfind(ctx) {
           const encodedName = encodeURIComponent(torrentName);
           const timestamp = torrent.timestamp ? new Date(torrent.timestamp * 1000) : new Date();
           
-          // Get files directly from torrent list data
-          const files = getFilesFromTorrent(torrent);
-          const isSingleFile = files.length === 1;
-          
-          console.log(`[ROOT] ${torrentName}: ${files.length} file(s) - ${isSingleFile ? 'FILE' : 'FOLDER'}`);
-          
-          if (isSingleFile) {
-            // Single file torrent - show as file
-            const file = files[0];
-            const ext = file.path.toLowerCase().split('.').pop();
-            const contentType = getContentType(ext);
-            
-            xmlResponse += `
-  <D:response>
-    <D:href>/${encodedName}</D:href>
-    <D:propstat>
-      <D:prop>
-        <D:resourcetype/>
-        <D:getcontentlength>${file.length || 0}</D:getcontentlength>
-        <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
-        <D:creationdate>${timestamp.toISOString()}</D:creationdate>
-        <D:displayname>${torrentName}</D:displayname>
-        <D:getcontenttype>${contentType}</D:getcontenttype>
-        <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
-      </D:prop>
-      <D:status>HTTP/1.1 200 OK</D:status>
-    </D:propstat>
-  </D:response>`;
-          } else {
-            // Multi-file torrent - show as folder
-            xmlResponse += `
+          // Always show as folder regardless of file count
+          xmlResponse += `
   <D:response>
     <D:href>/${encodedName}/</D:href>
     <D:propstat>
@@ -203,7 +173,6 @@ async function handlePropfind(ctx) {
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
   </D:response>`;
-          }
         }
       }
 
@@ -221,7 +190,7 @@ async function handlePropfind(ctx) {
     // Parse path
     const pathParts = path.split('/').filter(p => p).map(p => decodeURIComponent(p));
     
-    // Torrent directory or single file
+    // Torrent folder - always treat as folder
     if (pathParts.length === 1) {
       const torrents = await getTorrentsList();
       const torrent = torrents.find(t => {
@@ -245,41 +214,7 @@ async function handlePropfind(ctx) {
       
       const timestamp = torrent.timestamp ? new Date(torrent.timestamp * 1000) : new Date();
       
-      // If single file, treat the torrent name as the file directly (no folder)
-      if (files.length === 1) {
-        const file = files[0];
-        const ext = file.path.toLowerCase().split('.').pop();
-        const contentType = getContentType(ext);
-        
-        const xmlResponse = `<?xml version="1.0" encoding="utf-8"?>
-<D:multistatus xmlns:D="DAV:">
-  <D:response>
-    <D:href>/${encodeURIComponent(pathParts[0])}</D:href>
-    <D:propstat>
-      <D:prop>
-        <D:resourcetype/>
-        <D:getcontentlength>${file.length || 0}</D:getcontentlength>
-        <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
-        <D:creationdate>${timestamp.toISOString()}</D:creationdate>
-        <D:displayname>${pathParts[0]}</D:displayname>
-        <D:getcontenttype>${contentType}</D:getcontenttype>
-        <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
-      </D:prop>
-      <D:status>HTTP/1.1 200 OK</D:status>
-    </D:propstat>
-  </D:response>
-</D:multistatus>`;
-        
-        console.log(`[TORRENT] Returning as single file`);
-        
-        ctx.status = 207;
-        ctx.set('Content-Type', 'application/xml; charset=utf-8');
-        ctx.set('DAV', '1, 2');
-        ctx.body = xmlResponse;
-        return;
-      }
-      
-      // Multi-file torrent: return as folder
+      // Always return as folder
       let xmlResponse = `<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
   <D:response>
@@ -405,8 +340,8 @@ async function handleGetHead(ctx) {
   const path = decodeURIComponent(ctx.path);
   const pathParts = path.split('/').filter(p => p).map(p => decodeURIComponent(p));
 
-  // Single-file torrent (path length 1) or file in multi-file torrent (path length 2)
-  if (pathParts.length < 1 || pathParts.length > 2) {
+  // File in torrent (path length must be 2: /TorrentName/FileName)
+  if (pathParts.length !== 2) {
     ctx.status = 404;
     ctx.body = 'Not found';
     return;
@@ -426,20 +361,7 @@ async function handleGetHead(ctx) {
     }
 
     const files = getFilesFromTorrent(torrent);
-    
-    let file;
-    if (pathParts.length === 1) {
-      // Single file torrent - use the only file
-      if (files.length !== 1) {
-        ctx.status = 404;
-        ctx.body = 'Not a single file torrent';
-        return;
-      }
-      file = files[0];
-    } else {
-      // Multi-file torrent - find specific file
-      file = files.find(f => f.path === pathParts[1]);
-    }
+    const file = files.find(f => f.path === pathParts[1]);
 
     if (!file) {
       ctx.status = 404;
