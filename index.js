@@ -2,6 +2,7 @@ import Koa from 'koa';
 import Router from '@koa/router';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { createReadStream } from 'fs';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -56,18 +57,30 @@ async function getTorrentsList() {
   }
 }
 
-// Helper function to get torrent status with file stats
-async function getTorrentStatus(hash) {
-  try {
-    const response = await axios.post(`${TORRSERVER_URL}/torrents`, {
-      action: 'get',
-      hash: hash
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching torrent status:', error.message);
-    return null;
+// Helper function to get file list from torrent data
+function getFilesFromTorrent(torrent) {
+  // Parse the data property which contains JSON string with file info
+  if (torrent.data) {
+    try {
+      const parsedData = JSON.parse(torrent.data);
+      if (parsedData.TorrServer && parsedData.TorrServer.Files && parsedData.TorrServer.Files.length > 0) {
+        console.log(`[FILES] ${torrent.title}: Found ${parsedData.TorrServer.Files.length} file(s)`);
+        return parsedData.TorrServer.Files;
+      }
+    } catch (error) {
+      console.log(`[ERROR] Failed to parse data for ${torrent.title}:`, error.message);
+      console.log(`[ERROR] Raw data:`, torrent.data.substring(0, 200));
+    }
   }
+  
+  // Fallback: check file_stats (though you said not to trust it)
+  if (torrent.file_stats && torrent.file_stats.length > 0) {
+    console.log(`[FILES] ${torrent.title}: Using file_stats fallback (${torrent.file_stats.length} files)`);
+    return torrent.file_stats;
+  }
+  
+  console.log(`[FILES] ${torrent.title}: No files found!`);
+  return [];
 }
 
 // Helper function to determine content type
@@ -111,7 +124,7 @@ async function handlePropfind(ctx) {
   const path = decodeURIComponent(ctx.path);
   const depth = ctx.headers.depth || '0';
   
-  console.log(`PROPFIND request for: ${path}, depth: ${depth}`);
+  console.log(`[PROPFIND] Path: ${path}, Depth: ${depth}, User-Agent: ${ctx.headers['user-agent']}`);
 
   try {
     // Root directory
@@ -140,12 +153,43 @@ async function handlePropfind(ctx) {
   </D:response>`;
 
       if (depth !== '0') {
+        console.log(`[ROOT] Listing ${torrents.length} torrents...`);
         for (const torrent of torrents) {
           const torrentName = torrent.title || torrent.name || torrent.hash;
           const encodedName = encodeURIComponent(torrentName);
           const timestamp = torrent.timestamp ? new Date(torrent.timestamp * 1000) : new Date();
           
-          xmlResponse += `
+          // Get files directly from torrent list data
+          const files = getFilesFromTorrent(torrent);
+          const isSingleFile = files.length === 1;
+          
+          console.log(`[ROOT] ${torrentName}: ${files.length} file(s) - ${isSingleFile ? 'FILE' : 'FOLDER'}`);
+          
+          if (isSingleFile) {
+            // Single file torrent - show as file
+            const file = files[0];
+            const ext = file.path.toLowerCase().split('.').pop();
+            const contentType = getContentType(ext);
+            
+            xmlResponse += `
+  <D:response>
+    <D:href>/${encodedName}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:resourcetype/>
+        <D:getcontentlength>${file.length || 0}</D:getcontentlength>
+        <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
+        <D:creationdate>${timestamp.toISOString()}</D:creationdate>
+        <D:displayname>${torrentName}</D:displayname>
+        <D:getcontenttype>${contentType}</D:getcontenttype>
+        <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>`;
+          } else {
+            // Multi-file torrent - show as folder
+            xmlResponse += `
   <D:response>
     <D:href>/${encodedName}/</D:href>
     <D:propstat>
@@ -159,10 +203,13 @@ async function handlePropfind(ctx) {
       <D:status>HTTP/1.1 200 OK</D:status>
     </D:propstat>
   </D:response>`;
+          }
         }
       }
 
       xmlResponse += `</D:multistatus>`;
+      
+      console.log(`[ROOT] Returned ${depth === '0' ? 'root only' : `${torrents.length} items`}`);
       
       ctx.status = 207;
       ctx.set('Content-Type', 'application/xml; charset=utf-8');
@@ -174,7 +221,7 @@ async function handlePropfind(ctx) {
     // Parse path
     const pathParts = path.split('/').filter(p => p).map(p => decodeURIComponent(p));
     
-    // Torrent directory
+    // Torrent directory or single file
     if (pathParts.length === 1) {
       const torrents = await getTorrentsList();
       const torrent = torrents.find(t => {
@@ -183,15 +230,56 @@ async function handlePropfind(ctx) {
       });
 
       if (!torrent) {
+        console.log(`[TORRENT] Not found: ${pathParts[0]}`);
         ctx.status = 404;
         ctx.body = 'Torrent not found';
         return;
       }
 
-      const torrentStatus = await getTorrentStatus(torrent.hash);
-      const files = torrentStatus?.file_stats || [];
+      console.log(`[TORRENT] Found: ${torrent.title || torrent.name}, Hash: ${torrent.hash}`);
+      
+      const files = getFilesFromTorrent(torrent);
+      
+      console.log(`[TORRENT] Files: ${files.length}`);
+      files.forEach(f => console.log(`  - ${f.path} (${f.length} bytes, id: ${f.id})`));
+      
       const timestamp = torrent.timestamp ? new Date(torrent.timestamp * 1000) : new Date();
       
+      // If single file, treat the torrent name as the file directly (no folder)
+      if (files.length === 1) {
+        const file = files[0];
+        const ext = file.path.toLowerCase().split('.').pop();
+        const contentType = getContentType(ext);
+        
+        const xmlResponse = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/${encodeURIComponent(pathParts[0])}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:resourcetype/>
+        <D:getcontentlength>${file.length || 0}</D:getcontentlength>
+        <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
+        <D:creationdate>${timestamp.toISOString()}</D:creationdate>
+        <D:displayname>${pathParts[0]}</D:displayname>
+        <D:getcontenttype>${contentType}</D:getcontenttype>
+        <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`;
+        
+        console.log(`[TORRENT] Returning as single file`);
+        
+        ctx.status = 207;
+        ctx.set('Content-Type', 'application/xml; charset=utf-8');
+        ctx.set('DAV', '1, 2');
+        ctx.body = xmlResponse;
+        return;
+      }
+      
+      // Multi-file torrent: return as folder
       let xmlResponse = `<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
   <D:response>
@@ -235,6 +323,8 @@ async function handlePropfind(ctx) {
 
       xmlResponse += `</D:multistatus>`;
       
+      console.log(`[TORRENT] Returning folder with ${depth === '0' ? '0' : files.length} files`);
+      
       ctx.status = 207;
       ctx.set('Content-Type', 'application/xml; charset=utf-8');
       ctx.set('DAV', '1, 2');
@@ -242,7 +332,7 @@ async function handlePropfind(ctx) {
       return;
     }
 
-    // File request
+    // File request within a multi-file torrent
     if (pathParts.length === 2) {
       const torrents = await getTorrentsList();
       const torrent = torrents.find(t => {
@@ -256,8 +346,7 @@ async function handlePropfind(ctx) {
         return;
       }
 
-      const torrentStatus = await getTorrentStatus(torrent.hash);
-      const files = torrentStatus?.file_stats || [];
+      const files = getFilesFromTorrent(torrent);
       const file = files.find(f => f.path === pathParts[1]);
 
       if (!file) {
@@ -316,7 +405,8 @@ async function handleGetHead(ctx) {
   const path = decodeURIComponent(ctx.path);
   const pathParts = path.split('/').filter(p => p).map(p => decodeURIComponent(p));
 
-  if (pathParts.length !== 2) {
+  // Single-file torrent (path length 1) or file in multi-file torrent (path length 2)
+  if (pathParts.length < 1 || pathParts.length > 2) {
     ctx.status = 404;
     ctx.body = 'Not found';
     return;
@@ -335,9 +425,21 @@ async function handleGetHead(ctx) {
       return;
     }
 
-    const torrentStatus = await getTorrentStatus(torrent.hash);
-    const files = torrentStatus?.file_stats || [];
-    const file = files.find(f => f.path === pathParts[1]);
+    const files = getFilesFromTorrent(torrent);
+    
+    let file;
+    if (pathParts.length === 1) {
+      // Single file torrent - use the only file
+      if (files.length !== 1) {
+        ctx.status = 404;
+        ctx.body = 'Not a single file torrent';
+        return;
+      }
+      file = files[0];
+    } else {
+      // Multi-file torrent - find specific file
+      file = files.find(f => f.path === pathParts[1]);
+    }
 
     if (!file) {
       ctx.status = 404;
@@ -362,7 +464,7 @@ async function handleGetHead(ctx) {
 
     // GET request - stream file
     const streamUrl = `${TORRSERVER_URL}/play/${torrent.hash}/${file.id}`;
-    console.log(`Streaming: ${streamUrl}`);
+    console.log(`[STREAM] ${streamUrl} (Range: ${ctx.headers.range || 'none'})`);
 
     const headers = {};
     if (ctx.headers.range) {
@@ -517,39 +619,7 @@ app.use(async (ctx) => {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`
-╔════════════════════════════════════════════════════════════╗
-║      TorrServer Full WebDAV Bridge - Running               ║
-╠════════════════════════════════════════════════════════════╣
-║  WebDAV Server: http://0.0.0.0:${PORT}                    
-║  TorrServer:    ${TORRSERVER_URL}                    
-║  Health Check:  http://0.0.0.0:${PORT}/health             
-║  Auth:          ${USERNAME && PASSWORD ? 'Enabled (Basic Auth)' : 'Disabled'}
-╠════════════════════════════════════════════════════════════╣
-║  WEBDAV FEATURES:                                          ║
-║  ✅ PROPFIND (browse files)                               ║
-║  ✅ GET/HEAD (stream & info)                              ║
-║  ✅ OPTIONS (capabilities)                                ║
-║  ✅ PROPPATCH (metadata)                                  ║
-║  ✅ LOCK/UNLOCK (locking)                                 ║
-║  ✅ Range requests (seeking)                              ║
-║  ✅ ETags (caching)                                       ║
-║  ✅ Basic Auth (optional)                                 ║
-║  📖 Read-only mode                                        ║
-╠════════════════════════════════════════════════════════════╣
-║  INFUSE SETUP:                                             ║
-║  1. Add network share (WebDAV)                             ║
-║  2. Server: <your-server-ip>:${PORT}                      
-║  3. Path: / (or leave blank)                               ║
-║  4. Auth: ${USERNAME && PASSWORD ? 'Username/Password' : 'None'}                                   ║
-╠════════════════════════════════════════════════════════════╣
-║  COMPATIBLE WITH:                                          ║
-║  • Infuse (iOS/tvOS/macOS)                                 ║
-║  • VLC                                                     ║
-║  • Kodi                                                    ║
-║  • Windows Explorer                                        ║
-║  • macOS Finder                                            ║
-║  • Linux file managers                                     ║
-╚════════════════════════════════════════════════════════════╝
-  `);
+  console.log(`TorrServer WebDAV Bridge running on http://0.0.0.0:${PORT}`);
+  console.log(`TorrServer: ${TORRSERVER_URL}`);
+  console.log(`Auth: ${USERNAME && PASSWORD ? 'Enabled' : 'Disabled'}`);
 });
