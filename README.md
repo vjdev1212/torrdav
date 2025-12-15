@@ -18,7 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: jarvisnexus/torrdav:latest
+    image: vjdev1212/torrdav:latest
     container_name: torrdav
     ports:
       - "3000:3000"
