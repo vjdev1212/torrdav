@@ -69,11 +69,6 @@ function escapeXml(str) {
 
 // Helper function to get file list from torrent data
 function getFilesFromTorrent(torrent) {
-  // First check if file_stats already exists (like it does for TV shows)
-  if (torrent.file_stats && torrent.file_stats.length > 0) {
-    console.log(`[FILES] ${torrent.title}: Using file_stats (${torrent.file_stats.length} files)`);
-    return torrent.file_stats;
-  }
   
   // Parse the data property which contains JSON string with file info
   if (torrent.data) {
@@ -90,6 +85,13 @@ function getFilesFromTorrent(torrent) {
   
   console.log(`[FILES] ${torrent.title}: No files found!`);
   return [];
+}
+
+// Helper function to flatten file paths for display
+function flattenFilePath(filePath) {
+  // Extract just the filename from paths like "folder/subfolder/file.mkv"
+  const parts = filePath.split('/');
+  return parts[parts.length - 1]; // Return just the filename
 }
 
 // Helper function to determine content type
@@ -243,12 +245,13 @@ async function handlePropfind(ctx) {
       if (depth !== '0') {
         console.log(`[TORRENT] Adding ${files.length} files to XML response`);
         for (const file of files) {
-          const fileName = file.path;
-          const encodedFileName = encodeURIComponent(fileName);
-          const ext = fileName.toLowerCase().split('.').pop();
+          // Use flattened filename for display and href
+          const displayFileName = flattenFilePath(file.path);
+          const encodedFileName = encodeURIComponent(displayFileName);
+          const ext = displayFileName.toLowerCase().split('.').pop();
           const contentType = getContentType(ext);
           
-          console.log(`[TORRENT] Adding file: ${fileName}`);
+          console.log(`[TORRENT] Adding file: ${file.path} -> ${displayFileName}`);
           
           xmlResponse += `
   <D:response>
@@ -259,7 +262,7 @@ async function handlePropfind(ctx) {
         <D:getcontentlength>${file.length || 0}</D:getcontentlength>
         <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
         <D:creationdate>${timestamp.toISOString()}</D:creationdate>
-        <D:displayname>${escapeXml(fileName)}</D:displayname>
+        <D:displayname>${escapeXml(displayFileName)}</D:displayname>
         <D:getcontenttype>${contentType}</D:getcontenttype>
         <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
       </D:prop>
@@ -274,7 +277,7 @@ async function handlePropfind(ctx) {
       xmlResponse += `</D:multistatus>`;
       
       console.log(`[TORRENT] Returning folder with ${depth === '0' ? '0' : files.length} files`);
-      // console.log(`[XML] Response preview:`, xmlResponse.substring(0, 500));
+      console.log(`[XML] Response preview:`, xmlResponse.substring(0, 500));
       
       ctx.status = 207;
       ctx.set('Content-Type', 'application/xml; charset=utf-8');
@@ -283,8 +286,8 @@ async function handlePropfind(ctx) {
       return;
     }
 
-    // File request within a multi-file torrent
-    if (pathParts.length === 2) {
+    // File request within a torrent
+    if (pathParts.length >= 2) {
       const torrents = await getTorrentsList();
       const torrent = torrents.find(t => {
         const name = t.title || t.name || t.hash;
@@ -298,29 +301,42 @@ async function handlePropfind(ctx) {
       }
 
       const files = getFilesFromTorrent(torrent);
-      const file = files.find(f => f.path === pathParts[1]);
+      
+      // Join all path parts after the torrent name to get the requested filename
+      const requestedFile = pathParts.slice(1).join('/');
+      
+      // Try to find file by:
+      // 1. Exact path match (for single files)
+      // 2. Flattened filename match (for multi-file torrents)
+      const file = files.find(f => 
+        f.path === requestedFile || 
+        flattenFilePath(f.path) === requestedFile
+      );
 
       if (!file) {
+        console.log(`[FILE] Not found: ${requestedFile}`);
+        console.log(`[FILE] Available files:`, files.map(f => `${f.path} -> ${flattenFilePath(f.path)}`));
         ctx.status = 404;
         ctx.body = 'File not found';
         return;
       }
 
-      const ext = file.path.toLowerCase().split('.').pop();
+      const displayFileName = flattenFilePath(file.path);
+      const ext = displayFileName.toLowerCase().split('.').pop();
       const contentType = getContentType(ext);
       const timestamp = torrent.timestamp ? new Date(torrent.timestamp * 1000) : new Date();
 
       const xmlResponse = `<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
   <D:response>
-    <D:href>/${encodeURIComponent(pathParts[0])}/${encodeURIComponent(pathParts[1])}</D:href>
+    <D:href>/${encodeURIComponent(pathParts[0])}/${encodeURIComponent(displayFileName)}</D:href>
     <D:propstat>
       <D:prop>
         <D:resourcetype/>
         <D:getcontentlength>${file.length || 0}</D:getcontentlength>
         <D:getlastmodified>${timestamp.toUTCString()}</D:getlastmodified>
         <D:creationdate>${timestamp.toISOString()}</D:creationdate>
-        <D:displayname>${escapeXml(file.path)}</D:displayname>
+        <D:displayname>${escapeXml(displayFileName)}</D:displayname>
         <D:getcontenttype>${contentType}</D:getcontenttype>
         <D:getetag>"${torrent.hash}-${file.id}"</D:getetag>
         <D:supportedlock>
@@ -356,8 +372,8 @@ async function handleGetHead(ctx) {
   const path = decodeURIComponent(ctx.path);
   const pathParts = path.split('/').filter(p => p).map(p => decodeURIComponent(p));
 
-  // File in torrent (path length must be 2: /TorrentName/FileName)
-  if (pathParts.length !== 2) {
+  // File in torrent (path length must be at least 2)
+  if (pathParts.length < 2) {
     ctx.status = 404;
     ctx.body = 'Not found';
     return;
@@ -377,15 +393,26 @@ async function handleGetHead(ctx) {
     }
 
     const files = getFilesFromTorrent(torrent);
-    const file = files.find(f => f.path === pathParts[1]);
+    
+    // Join all path parts after the torrent name
+    const requestedFile = pathParts.slice(1).join('/');
+    
+    // Find file by exact path or flattened filename
+    const file = files.find(f => 
+      f.path === requestedFile || 
+      flattenFilePath(f.path) === requestedFile
+    );
 
     if (!file) {
+      console.log(`[STREAM] File not found: ${requestedFile}`);
+      console.log(`[STREAM] Available files:`, files.map(f => f.path));
       ctx.status = 404;
       ctx.body = 'File not found';
       return;
     }
 
-    const ext = file.path.toLowerCase().split('.').pop();
+    const displayFileName = flattenFilePath(file.path);
+    const ext = displayFileName.toLowerCase().split('.').pop();
     const contentType = getContentType(ext);
 
     // HEAD request
@@ -509,7 +536,6 @@ router.get('', async (ctx) => {
     };
   }
 });
-
 
 // Use router
 app.use(router.routes());
